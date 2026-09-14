@@ -8,12 +8,8 @@
 **它不是文件管理器，也不是桌面美化工具。** 它是一个纯显示层：所有桌面内容通过 Portal 访问，
 但文件的真实位置从未改变。
 
-<p align="center">
-  <img src="docs/screenshot-main.png" alt="Windows Desktop Portal" width="820">
-</p>
-
-> 📷 **截图占位** —— 把截图放到 `docs/screenshot-main.png` 即可显示。
-> 注意：截图会暴露桌面上安装的软件，公开前请自行确认。
+> 📷 **截图待补** —— 想加截图就放到 `docs/screenshot-main.png`（详见 `docs/README.md`）。
+> 注意：截图会暴露桌面上安装的软件。
 
 ---
 
