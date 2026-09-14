@@ -65,7 +65,7 @@ Windows 11 Fluent 浅色主题。三个独立悬浮模块：**分类导航 / 内
 
 ## 安装
 
-从 [Releases](../../releases) 下载 `Windows Desktop Portal_0.1.0_x64-setup.exe` 安装。
+从 [Releases](../../releases) 下载 `Windows.Desktop.Portal_0.1.0_x64-setup.exe` 安装。
 
 安装包会一并装好 WebView2 依赖检测与开机启动项（可在面板里关掉）。
 
