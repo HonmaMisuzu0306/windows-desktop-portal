@@ -1,0 +1,758 @@
+/* Windows 11 浅色主题的桌面启动器。
+   三个独立悬浮模块：分类导航 / 内容区 / 最近访问。
+   模糊由 Rust 侧的 blur-behind 提供（白色染色），这里只叠一层薄薄的白。
+   模块之间是缝隙，透出被模糊的桌面 —— 这是有意的设计取舍。 */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  /* 浅色主题：文字是近黑不是纯黑，压在磨砂白上更柔和 */
+  --ink: #1b1b1b;
+  --ink-2: rgba(0, 0, 0, 0.62);
+  --ink-3: rgba(0, 0, 0, 0.42);
+  /* Windows 11 系统强调色。只标记"当前位置"和"拖拽落点" */
+  --accent: #0067c0;
+  --accent-bg: rgba(0, 103, 192, 0.1);
+  --accent-line: rgba(0, 103, 192, 0.42);
+  --rule: rgba(0, 0, 0, 0.07);
+  --tile: rgba(0, 0, 0, 0.04);
+  --tile-hi: rgba(0, 0, 0, 0.07);
+  --danger: #c42b1c;
+  /* 模块底色：一层薄白，真正的模糊来自原生 blur-behind */
+  --glass: rgba(255, 255, 255, 0.62);
+  --hairline: rgba(255, 255, 255, 0.9);
+  /* 浅色面板的投影要更轻、更散 */
+  --lift: 0 2px 8px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+  --lift-hi: 0 12px 40px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.1);
+  /* 弹簧感：起步快、末端轻微过冲 */
+  --spring: cubic-bezier(0.22, 1.12, 0.36, 1);
+  --font: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI Variable Text", "Segoe UI",
+    system-ui, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font);
+  color: var(--ink);
+  background: transparent;
+  overflow: hidden;
+  cursor: default;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- 面板容器 ---------- */
+
+.dock {
+  position: relative;
+  display: flex;
+  gap: 14px;
+  height: 100vh;
+  padding: 16px 16px 14px;
+  /* 容器本身不画背景，模块之间的缝隙才会露出（被模糊的）桌面 */
+  background: none;
+}
+
+/* 收起时只剩屏幕底边一条 3px 的感应带，必须**完全不可见** ——
+   不画背景、不画高光边、不画拉手。用户平时不该感知到应用存在。 */
+.dock.is-collapsed {
+  padding: 0;
+  background: none;
+}
+
+.dock.is-collapsed > * {
+  visibility: hidden;
+}
+
+/* ---------- 悬浮模块 ---------- */
+
+.module {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 20px;
+  background: var(--glass);
+  box-shadow: var(--lift-hi);
+  overflow: hidden;
+}
+
+/* 玻璃顶边被光打亮那一线 —— 三个模块各自一条 */
+.module::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 16px;
+  right: 16px;
+  height: 1px;
+  z-index: 1;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.95) 30%,
+    #fff 50%,
+    rgba(255, 255, 255, 0.95) 70%,
+    transparent
+  );
+}
+
+.module--nav {
+  flex: 0 0 auto;
+  width: 196px;
+  padding: 18px 12px 12px;
+}
+
+.module--content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.module--recent {
+  flex: 0 0 auto;
+  width: 292px;
+}
+
+/* ---------- 分类导航模块 ---------- */
+
+.brand {
+  padding: 0 12px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--ink-3);
+}
+
+.nav {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow-y: auto;
+}
+
+.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 11px 14px;
+  border: 0;
+  border-radius: 11px;
+  background: none;
+  font: inherit;
+  font-size: 14.5px;
+  color: var(--ink-2);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    color 0.18s var(--spring),
+    background-color 0.18s var(--spring),
+    transform 0.18s var(--spring);
+}
+
+/* Fluent 的选中标记：左侧一道短竖条，从中间"长"出来 */
+.nav-item::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  width: 3px;
+  height: 0;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  background: var(--accent);
+  transition: height 0.26s var(--spring);
+}
+
+.nav-item:hover {
+  color: var(--ink);
+  background: var(--tile);
+  transform: translateX(2px);
+}
+
+.nav-item[data-on="true"] {
+  color: var(--ink);
+  font-weight: 600;
+  background: var(--tile-hi);
+}
+
+.nav-item[data-on="true"]::before {
+  height: 19px;
+}
+
+.nav-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.nav-count {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.nav-item[data-on="true"] .nav-count {
+  color: var(--accent);
+}
+
+.nav-sep {
+  height: 1px;
+  margin: 9px 12px;
+  background: var(--rule);
+}
+
+.side-foot {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 12px;
+  margin-top: 10px;
+  border-top: 1px solid var(--rule);
+}
+
+.chip {
+  padding: 5px 11px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.5);
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition:
+    color 0.18s var(--spring),
+    border-color 0.18s var(--spring),
+    background-color 0.18s var(--spring),
+    transform 0.18s var(--spring);
+}
+
+.chip:hover {
+  border-color: rgba(0, 0, 0, 0.16);
+  transform: translateY(-1px);
+}
+
+.chip[data-on="true"] {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-bg);
+}
+
+.side-icons {
+  display: flex;
+  gap: 3px;
+  width: 100%;
+  margin-top: 2px;
+}
+
+.icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition:
+    color 0.18s var(--spring),
+    background-color 0.18s var(--spring),
+    transform 0.18s var(--spring);
+}
+
+.icon:hover {
+  color: var(--ink);
+  background: var(--tile);
+  transform: translateY(-1px);
+}
+
+.icon:disabled {
+  opacity: 0.4;
+  cursor: default;
+  transform: none;
+}
+
+/* 退出是破坏性动作，悬停时用警示色区别于其他图标 */
+.icon--quit:hover {
+  color: var(--danger);
+}
+
+/* ---------- 内容模块 ---------- */
+
+.main-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 22px 26px 14px;
+}
+
+.main-title {
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.main-sub {
+  font-size: 12.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 26px 22px;
+  /* 切分类时的进场：轻微上浮 + 淡入。key={tab} 让每次切换重放这个动画。 */
+  animation: view-in 0.32s var(--spring);
+}
+
+@keyframes view-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.body::-webkit-scrollbar {
+  width: 11px;
+}
+
+.body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.body::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.16);
+  background-clip: content-box;
+}
+
+.body::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.28);
+  background-clip: content-box;
+}
+
+/* ---------- 卡片网格 ---------- */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(124px, 1fr));
+  gap: 10px;
+}
+
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 16px 11px 14px;
+  border: 1px solid transparent;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.42);
+  font: inherit;
+  color: var(--ink-2);
+  text-align: center;
+  cursor: pointer;
+  transition:
+    background-color 0.2s var(--spring),
+    border-color 0.2s var(--spring),
+    color 0.2s var(--spring),
+    box-shadow 0.2s var(--spring),
+    transform 0.2s var(--spring);
+}
+
+.card:hover {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.82);
+  border-color: var(--hairline);
+  box-shadow: var(--lift);
+  transform: translateY(-2px);
+}
+
+.card:active {
+  box-shadow: var(--lift);
+  transform: translateY(0) scale(0.985);
+}
+
+.card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.tile {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.55);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+
+/* 原生图标自带配色，不要给它加边框或底色 */
+.native-icon {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+}
+
+.card:hover .tile {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.tile[data-kind="app"] {
+  color: var(--accent);
+}
+
+.card .name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+/* 路径提示：比名称更弱，只作为"这是从哪来的"的线索 */
+.card .hint {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 10.5px;
+  line-height: 1.3;
+  color: var(--ink-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.acts {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transform: scale(0.9);
+  transition:
+    opacity 0.18s var(--spring),
+    transform 0.18s var(--spring);
+}
+
+.card:hover .acts,
+.card:focus-within .acts {
+  opacity: 1;
+  transform: none;
+}
+
+.acts button {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: var(--lift);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition:
+    color 0.14s,
+    background-color 0.14s;
+}
+
+.acts button:hover {
+  color: var(--ink);
+  background: #fff;
+}
+
+.acts button.rm:hover {
+  color: var(--danger);
+}
+
+.rename {
+  width: 100%;
+  padding: 4px 5px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  text-align: center;
+  outline: none;
+}
+
+/* ---------- 最近访问模块 ---------- */
+
+.recent-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 22px 20px 10px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.recent-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 12px 16px;
+  animation: view-in 0.32s var(--spring);
+}
+
+.recent-body::-webkit-scrollbar {
+  width: 9px;
+}
+
+.recent-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.recent-body::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.14);
+  background-clip: content-box;
+}
+
+.recent {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  font: inherit;
+  color: var(--ink-2);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color 0.18s var(--spring),
+    color 0.18s var(--spring),
+    transform 0.18s var(--spring);
+}
+
+.row:hover {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.7);
+  transform: translateX(2px);
+}
+
+.row .rn {
+  overflow: hidden;
+  font-size: 13px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.row .rp {
+  overflow: hidden;
+  font-size: 10.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.row .rt {
+  font-size: 10.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 页内拖拽 ---------- */
+
+/* 拖拽中把非落点压暗，让目标一目了然 */
+.dock.is-dragging .nav-item:not([data-drop="true"]) {
+  opacity: 0.38;
+}
+
+.nav-item[data-drop="true"] {
+  color: var(--accent);
+  background: var(--accent-bg);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+.nav-item[data-drop="true"]::before {
+  height: 19px;
+}
+
+/* 被拿起来的那张卡片留在原位但变淡 */
+.card[data-drag-src="true"] {
+  opacity: 0.28;
+}
+
+.ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: 240px;
+  padding: 8px 13px;
+  border: 1px solid var(--accent-line);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--lift-hi);
+  font-size: 13px;
+  color: var(--ink);
+  /* 关键：否则 ghost 会挡住命中检测 */
+  pointer-events: none;
+  will-change: transform;
+}
+
+.ghost-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ---------- 空态 / 拖入 / 提示 ---------- */
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  color: var(--ink-3);
+}
+
+.empty .big {
+  font-size: 15px;
+  color: var(--ink-2);
+}
+
+.empty .sub {
+  font-size: 12.5px;
+}
+
+.drop {
+  position: absolute;
+  inset: 3px;
+  z-index: 5;
+  border: 2px dashed var(--accent-line);
+  border-radius: 20px;
+  pointer-events: none;
+}
+
+.toast {
+  position: absolute;
+  left: 50%;
+  bottom: 26px;
+  z-index: 10;
+  max-width: 70%;
+  padding: 10px 18px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(196, 43, 28, 0.28);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: var(--lift-hi);
+  font-size: 13px;
+  color: var(--danger);
+}
+
+/* 中性提示（如同步结果），与报错的红色区分开 */
+.toast--info {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+/* 配置损坏时的常驻提示。与 .toast 的区别是它不会自己消失。 */
+.fatal {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100%;
+  padding: 0 56px;
+  text-align: center;
+}
+
+.fatal-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--danger);
+}
+
+.fatal-msg {
+  max-width: 62ch;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.fatal-hint {
+  max-width: 62ch;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--ink-3);
+}
+
+.fatal-actions {
+  display: flex;
+  gap: 9px;
+  margin-top: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}

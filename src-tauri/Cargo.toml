@@ -1,0 +1,46 @@
+[package]
+name = "ui-desktop"
+version = "0.1.0"
+description = "桌面收纳工具"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-autostart = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+opener = "0.7"
+window-vibrancy = "0.6"
+# 图标编码。两者都已在依赖树里（传递依赖），零新增下载。
+png = "0.17"
+base64 = "0.21"
+
+# 只用 SHGetKnownFolderPath 解析桌面目录（能正确应对 OneDrive 重定向）。
+# 选 windows-sys 而非 windows：前者已在依赖树里，零新增下载；
+# 后者会拖进 collections/future/numerics/strings 一整套，编译明显变慢。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_UI_Shell",
+    "Win32_System_Com",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    # DwmEnableBlurBehindWindow 支持 hRgnBlur —— 只在指定区域做模糊。
+    # 这是"面板真模糊 + 缝隙真透明"能同时成立的唯一途径：
+    # SetWindowCompositionAttribute（window-vibrancy 用的）把模糊铺满整个窗口矩形，
+    # 而 SetWindowRgn 裁不掉 DWM 画的那层背景。
+    "Win32_Graphics_Dwm",
+    # SHGetFileInfoW 的签名引用了 Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES，
+    # 所以它被这个 feature 门控 —— 不开就不存在。
+    "Win32_Storage_FileSystem",
+] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
