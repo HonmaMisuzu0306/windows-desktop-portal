@@ -596,18 +596,16 @@ fn main() {
         .setup(|app| {
             let win = app.get_webview_window("main").expect("主窗口缺失");
 
-            // 让 webview 自身不画底。
+            // 这里**故意不**调用 set_background_color —— 加回来会坏掉渲染。
             //
-            // 这是"收起时完全不可见"的前提：webview 默认有一层不透明底色，
-            // 不关掉的话，无论 CSS 怎么设透明，收起的那 3px 感应带都会露出
-            // 一条白/灰边 —— 那就等于桌面底部永远挂着一道线。
+            // 早期"收起时留一条 3px 感应带"的方案需要它：靠
+            // set_background_color(Color(0, 0, 0, 0)) 让 webview 不画底。但实测
+            // Windows 上 webview 层只接受 alpha = 0，而 alpha = 0 会让它
+            // **完全不渲染**（窗口在、能收输入、却一个像素都不画）；
+            // 其他 alpha 又会被强制成 255，等于没用。
             //
-            // Tauri 文档：Windows 上 webview 层只接受 alpha = 0，
-            // 其他 alpha 会被强制成 255。所以必须是全透明，不能"半透明"。
-            // TODO(bisect): 暂时注释，验证它是不是"窗口在但什么都不画"的元凶
-            // if let Err(e) = win.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 0))) {
-            //     eprintln!("[window] 设置透明底色失败（收起态可能可见）：{e}");
-            // }
+            // 现在收起走的是 dock::set_visible → window.hide()，整窗消失、
+            // 感应带不复存在，这个调用连同它要解决的问题一起作废了。
 
             dock::layout(&win, true).map_err(|e| e.to_string())?;
 

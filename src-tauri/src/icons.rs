@@ -37,7 +37,21 @@ pub fn icon_data_url(path: &str) -> Option<String> {
     Some(format!("data:image/png;base64,{b64}"))
 }
 
+/// `SHGetFileInfoW` 在**冷启动的首次并发调用**下会成片失败 ——
+/// 实测 8 线程同时首次取 `C:\Windows` 的图标只有 1 个成功，其余全部返回 0 / 空 HICON；
+/// shell 图标缓存预热过之后再并发就完全正常（8/8）。
+/// 与 COM 初始化无关：加不加 `CoInitializeEx` 冷启动都是 1/8。
+///
+/// 应用里图标提取全部跑在主线程上（`get_icons` 是同步 command，见 main.rs），
+/// 天然串行，所以这不是线上问题。但测试并行跑时会稳定复现，而且一旦有人把
+/// `get_icons` 改成 `async fn`，它就会立刻变成真 bug（用户会看到一屏几何图形）。
+/// 一把无竞争的进程内锁把 shell 调用串起来，代价可以忽略。
+static SHELL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn extract_png(path: &str) -> Option<Vec<u8>> {
+    // 中毒也要继续：这把锁保护的只是"调用别并发"，不是任何不变量
+    let _guard = SHELL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     let wide = to_wide(path);
     let mut shfi: SHFILEINFOW = unsafe { std::mem::zeroed() };
 
@@ -202,5 +216,17 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].path, paths[0]);
         assert_eq!(entries[1].path, paths[1]);
+    }
+
+    /// 并发冷启动取同一个图标。回归测试：`SHGetFileInfoW` 的首次并发调用
+    /// 会成片失败（见 `SHELL_LOCK` 的注释），没有那把锁时这里 8 个线程只剩 1 个成功。
+    /// 应用里提取本来就是串行的，这条测试守的是"别把锁去掉"。
+    #[test]
+    fn concurrent_cold_extraction_all_succeed() {
+        let hs: Vec<_> = (0..8)
+            .map(|_| std::thread::spawn(|| icon_data_url("C:\\Windows").is_some()))
+            .collect();
+        let ok = hs.into_iter().map(|h| h.join().unwrap()).filter(|b| *b).count();
+        assert_eq!(ok, 8, "并发取图标应该全部成功，实际 {ok}/8");
     }
 }

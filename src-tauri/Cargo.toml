@@ -1,7 +1,7 @@
 [package]
-name = "ui-desktop"
+name = "windows-desktop-portal"
 version = "0.1.0"
-description = "桌面收纳工具"
+description = "Windows 桌面入口管理器 —— 让桌面保持干净，且不移动任何原始文件"
 edition = "2021"
 rust-version = "1.77"
 
