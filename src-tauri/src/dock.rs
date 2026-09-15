@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
 use tauri::{LogicalPosition, LogicalSize, WebviewWindow};
 
@@ -71,17 +72,22 @@ pub fn enforce_frameless(window: &WebviewWindow) -> Result<(), String> {
             | WS_CLIPSIBLINGS;
 
         let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        // WS_EX_LAYERED 必须在这里一起保住：tao 每次 show/hide 重写样式都会把它
+        // 冲掉，而收起动画的淡出全靠它，见 `set_window_alpha`。
         let wanted_ex = (ex
             & !(WS_EX_WINDOWEDGE
                 | WS_EX_CLIENTEDGE
                 | WS_EX_DLGMODALFRAME
                 | WS_EX_STATICEDGE
                 | WS_EX_APPWINDOW))
-            | WS_EX_TOOLWINDOW;
+            | WS_EX_TOOLWINDOW
+            | WS_EX_LAYERED;
 
         // 没漂移就别惊动窗口：SWP_FRAMECHANGED 会触发一次重算和重绘
         if style == wanted && ex == wanted_ex {
-            return Ok(());
+            // 样式没漂移也要补一次透明度：`SetWindowLongW` 改扩展样式会把分层
+            // 属性清掉，而 tao 自己那次重写我们无从判断内容是否一致。
+            return apply_alpha(window);
         }
 
         SetWindowLongW(hwnd, GWL_STYLE, wanted as i32);
@@ -97,6 +103,84 @@ pub fn enforce_frameless(window: &WebviewWindow) -> Result<(), String> {
             SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
         );
     }
+    apply_alpha(window)
+}
+
+/// 当前整窗不透明度（0–255）。默认全不透明。
+static WINDOW_ALPHA: AtomicU8 = AtomicU8::new(255);
+
+/// 让**整个窗口**一起淡出 —— webview 画的内容，和 DWM 那层原生玻璃。
+///
+/// 收起动画的淡出必须走这里，不能走 CSS 的 `opacity`。CSS 只管得到 webview
+/// 自己画的东西；`DwmEnableBlurBehindWindow` 施加的玻璃是 DWM 在窗口这一层合成
+/// 的，**不参与 CSS 透明度**。于是面板淡到全透明之后那层玻璃还留在屏幕上，
+/// 直到窗口隐藏才突然消失 —— 实测收起末段约 50 ms 里模块区域与桌面本底对不上
+/// （白底实测差 55 个色阶，暗色桌面上看就是"一块黑"），这正是用户报告的
+/// "收起后有黑色残留"。
+///
+/// `WS_EX_LAYERED` + `SetLayeredWindowAttributes(LWA_ALPHA)` 是唯一能把两者绑成
+/// 一体的做法。实测（白底 2560×1600，窗口区域取模块内一点）：
+///
+/// | 状态 | 模块区域读值 |
+/// |---|---|
+/// | 玻璃在、不分层 | 232 |
+/// | 玻璃在、分层 alpha=0 | 255（= 桌面本底，玻璃一起没了）|
+/// | 玻璃在、分层 alpha=255 | 232（与不分层逐点一致，玻璃完好）|
+///
+/// 所以分层窗口不会把毛玻璃弄没，而 alpha=0 时连玻璃一起消失。动画因此改成
+/// 逐帧发 alpha，CSS 那侧不再碰 `opacity`。
+#[cfg(target_os = "windows")]
+pub fn set_window_alpha(window: &WebviewWindow, alpha: u8) -> Result<(), String> {
+    WINDOW_ALPHA.store(alpha, Ordering::SeqCst);
+    apply_alpha(window)
+}
+
+#[cfg(not(windows))]
+pub fn set_window_alpha(_window: &WebviewWindow, alpha: u8) -> Result<(), String> {
+    WINDOW_ALPHA.store(alpha, Ordering::SeqCst);
+    Ok(())
+}
+
+/// 把记住的不透明度真正施加到窗口上。样式被抢走时自己补回来。
+///
+/// ⚠️ 不能只调 `SetLayeredWindowAttributes` 就完事：tao 在 `show()` 之后约 10 ms
+/// 还会用 `to_window_styles()` 重写一遍窗口样式，那套样式里没有 `WS_EX_LAYERED`
+/// —— 于是分层属性被清掉，此后每一次 `SetLayeredWindowAttributes` 都会失败。
+/// 表现是**淡出整个失效**（面板一路不透明，最后硬切没），而不是慢慢淡。
+///
+/// 所以失败时补回 `WS_EX_LAYERED` 再试一次。补样式只走 `SetWindowLongW` +
+/// `SetLayeredWindowAttributes`，**不碰 `SetWindowPos(SWP_FRAMECHANGED)`** ——
+/// 那一下会把窗口区域清掉（见 `set_visible` 的注释），而这条路径是动画期间
+/// 每帧都可能走到的。
+#[cfg(target_os = "windows")]
+fn apply_alpha(window: &WebviewWindow) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, SetLayeredWindowAttributes, SetWindowLongW, GWL_EXSTYLE, LWA_ALPHA,
+        WS_EX_LAYERED,
+    };
+
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as _;
+    let alpha = WINDOW_ALPHA.load(Ordering::SeqCst);
+
+    unsafe {
+        if SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA) != 0 {
+            return Ok(());
+        }
+
+        let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        if ex & WS_EX_LAYERED == 0 {
+            SetWindowLongW(hwnd, GWL_EXSTYLE, (ex | WS_EX_LAYERED) as i32);
+            // 改完样式要重新下发一次属性；这里不需要 FRAMECHANGED（实测有效）
+            if SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA) != 0 {
+                return Ok(());
+            }
+        }
+    }
+    Err("SetLayeredWindowAttributes 失败".into())
+}
+
+#[cfg(not(windows))]
+fn apply_alpha(_window: &WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 

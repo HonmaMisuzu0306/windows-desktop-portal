@@ -601,13 +601,17 @@ fn set_panel_regions(window: WebviewWindow, rects: Vec<dock::PanelRect>) -> Resu
     }
 }
 
-/// 动画的每一帧调一次：面板整体下移 `dy` 逻辑像素时，窗口区域和模糊区域跟着走。
+/// 动画的每一帧调一次：面板整体下移 `dy` 逻辑像素时，窗口区域和模糊区域跟着走，
+/// 整窗不透明度同时降到 `alpha`。
 ///
 /// 不跟着走的话，滑动中的面板会被旧的裁剪区域切掉一条边 —— 那才是"网页元素
-/// 突然显示/隐藏"那种廉价感的真正来源。每帧只发一个数字，测量留在前端。
+/// 突然显示/隐藏"那种廉价感的真正来源。每帧只发两个数字，测量留在前端。
+///
+/// 淡出必须和位移同帧下达，否则玻璃和内容又会错开一格（见 `dock::set_window_alpha`）。
 #[tauri::command]
-fn set_panel_offset(window: WebviewWindow, dy: f64) -> Result<(), String> {
-    dock::set_region_offset(&window, dy)
+fn set_panel_offset(window: WebviewWindow, dy: f64, alpha: u8) -> Result<(), String> {
+    dock::set_region_offset(&window, dy)?;
+    dock::set_window_alpha(&window, alpha)
 }
 
 #[tauri::command]

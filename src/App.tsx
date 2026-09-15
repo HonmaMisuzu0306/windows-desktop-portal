@@ -221,18 +221,25 @@ export default function App() {
   }, [expanded, tab, config]);
 
   // ── 位移 → 视觉 ─────────────────────────────────────────────
-  // 只用 transform 和 opacity：两个都不触发重排，交给合成器做。
-  // 位移同时驱动透明度，两者永远不会脱节。
+  // 位移走 DOM 的 transform（合成器就能做，不触发重排），透明度走**窗口本身**：
+  // CSS 的 opacity 管不到窗口上那层 DWM 玻璃，那层玻璃会一直留到窗口隐藏，
+  // 收起末尾就是用户报的"一块黑"。整窗 alpha 才能让玻璃和内容一起淡。
+  //
+  // DOM 自己的 opacity 退化成一道"要么全遮要么全显"的闸门，只在**完全收起**那一档
+  // 落下来。理由：窗口 `show()` 之后约 15 ms 扩展样式才补回来，那期间整窗是不透明的
+  // （实测 `layered=0`），DOM 若已经可见就会闪一帧满亮的面板。动画过程一律不遮，
+  // 淡出完全交给整窗 alpha，两者不会各走一套曲线。
   const applyVisual = useCallback((dy: number, animating: boolean) => {
     const el = dockRef.current;
     if (el) {
-      el.style.willChange = animating ? "transform, opacity" : "";
+      el.style.willChange = animating ? "transform" : "";
       el.style.transform = dy === 0 ? "" : `translate3d(0, ${dy}px, 0)`;
-      el.style.opacity = dy === 0 ? "" : String(Math.max(0, 1 - dy / SLIDE));
+      el.style.opacity = dy >= SLIDE - 0.5 ? "0" : "1";
     }
     // 原生裁剪区域必须跟 CSS 的位移同帧更新，否则滑动中的面板会被旧的区域切边 ——
     // 那种"被裁掉一条"的违和感，正是以前像网页元素闪现的原因之一。
-    void api.setPanelOffset(dy).catch(() => {});
+    const alpha = Math.round(255 * Math.max(0, 1 - dy / SLIDE));
+    void api.setPanelOffset(dy, alpha).catch(() => {});
   }, []);
 
   const tween = useCallback(
@@ -281,8 +288,11 @@ export default function App() {
 
     // 顺序要紧：先把原生裁剪摆到动画起点，再显示窗口。
     // 反过来窗口会先以"最终位置、接近全亮"的样子露出一帧 —— 那就是闪。
+    // DOM 也先落到"完全收起"那一档（见 applyVisual），把 show() 之后那段样式
+    // 还没补回来的空窗盖住。
+    if (dockRef.current) dockRef.current.style.opacity = "0";
     void api
-      .setPanelOffset(SLIDE)
+      .setPanelOffset(SLIDE, 0)
       .then(() => api.setDockExpanded(true))
       .then(() => tween(0, ENTER_MS))
       .catch(fail);

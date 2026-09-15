@@ -74,6 +74,11 @@ export const setPanelRegions = (rects: PanelRect[]) =>
 /**
  * 动画的每一帧调一次：面板整体下移 `dy`（逻辑像素）时，窗口的原生裁剪区域
  * 和模糊区域跟着一起走，否则滑动中的面板会被旧的区域切掉一条边。
- * 基准坐标由 `setPanelRegions` 记在 Rust 侧，这里只发一个数字。
+ * 基准坐标由 `setPanelRegions` 记在 Rust 侧，这里只发位移。
+ *
+ * `alpha`（0–255）是**整窗**不透明度。淡出不能交给 CSS 的 `opacity`：那管不到
+ * 窗口上那层 DWM 玻璃，玻璃会留到窗口隐藏才消失，收尾就是"一块黑"。
+ * 两个数字必须同一帧送到，否则玻璃和内容会错开。详见 `dock::set_window_alpha`。
  */
-export const setPanelOffset = (dy: number) => invoke<void>("set_panel_offset", { dy });
+export const setPanelOffset = (dy: number, alpha: number) =>
+  invoke<void>("set_panel_offset", { dy, alpha });

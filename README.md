@@ -63,8 +63,9 @@
 Windows 11 Fluent 浅色主题。三个独立悬浮模块：**分类导航 / 内容区 / 最近访问**。
 侧栏底部的 ⭐ 收藏夹可以随时新建分类，数量不限 —— 卡片拖进去即可，原文件不受影响。
 
-唤醒与收起带一段从屏幕底边滑出的动画（`transform` + `opacity`，约 180–200 ms，
-不触碰 `width` / `height` / `top` / `left`）。
+唤醒与收起带一段从屏幕底边滑出的动画（约 180–200 ms）：位移走 `transform`，
+淡出走**整窗 alpha**（`WS_EX_LAYERED` + `SetLayeredWindowAttributes`），
+全程不触碰 `width` / `height` / `top` / `left`。
 
 ---
 
@@ -163,6 +164,8 @@ npx tsc --noEmit              # 前端类型检查
 | `SetWindowCompositionAttribute` 把模糊铺满整窗、**裁不掉** | 不用。模块之间的缝隙会一直是灰的 |
 | `set_background_color(alpha=0)` 会让 **webview 完全不渲染** | 不用 |
 | 收起时残留可见像素块 | **隐藏窗口**，不是缩成细带；唤醒改由轮询光标负责 |
+| `DwmEnableBlurBehindWindow` 那层玻璃**不参与 CSS 的 `opacity`** —— 内容淡没之后玻璃还在，收尾是一块"黑" | 淡出改由 `WS_EX_LAYERED` + `SetLayeredWindowAttributes(LWA_ALPHA)` 驱动整窗，玻璃跟着一起淡 |
+| tao 在 `show()` 后约 10 ms 重写样式，会把 `WS_EX_LAYERED`（以及 `SWP_FRAMECHANGED` 一并）冲掉 | 样式被抢走时自己补回来；`show()` 之后那段空窗由 DOM 的 `opacity` 闸门盖住 |
 | 窗口底边因 DPI 取整探出屏幕 | 用 `outer_size()` 实际外框回推位置 |
 | 任务栏重新抢 topmost | 每次布局后重新声明置顶 |
 

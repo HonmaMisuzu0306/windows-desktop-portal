@@ -34,14 +34,27 @@
      `SetWindowPos(SWP_FRAMECHANGED)` **会把自定义窗口区域一起丢掉**。实测
      show 之后有约 14 ms 窗口是完全没有裁剪的 —— 现在显示后立刻用记住的
      「基准矩形 + 当前位移」把区域补回来
+- **收起末尾残留一片"玻璃"**（用户报告的"黑色残留"）。淡出原先只改 CSS 的
+  `opacity`，那管得到 webview 画的内容，管不到 `DwmEnableBlurBehindWindow`
+  施加的那层原生玻璃 —— 面板内容淡到全透明之后玻璃还留在屏幕上，直到窗口隐藏
+  才突然消失。改用 `WS_EX_LAYERED` + `SetLayeredWindowAttributes(LWA_ALPHA)`
+  逐帧驱动**整窗**不透明度，玻璃和内容一起淡。白底实测：修前收尾约 50 ms 里
+  模块区域比桌面本底暗 55 个色阶，修后与桌面本底逐点相等
 - 动画首帧可能越过起点（rAF 回调的时间戳早于记录的起点，进度变成负数）
 - 启动时窗口创建到 `setup` 之间会以带标题栏的样式可见；现在窗口以
   `visible: false` 创建，第一次显示就已经是无边框的
+- tao 在 `show()` 之后约 10 ms 会用 `to_window_styles()` 重写窗口样式，把
+  `WS_EX_LAYERED` 一起冲掉 —— 那之后每一次 `SetLayeredWindowAttributes` 都会
+  失败，淡出会**整个失效**（面板一路不透明，最后硬切）。现在样式被抢走时会
+  自己补回来再重试，不依赖 show 之后的补救顺序
 
 ### 变更
 
-- 出动画只改 `transform` / `opacity`，不碰 `width` / `height` / `top` / `left`；
+- 出动画只改 `transform`，不碰 `width` / `height` / `top` / `left`；
   原生裁剪区域跟着 CSS 位移同帧更新，滑动过程中面板不会被旧区域切掉一条边
+- 淡出从 CSS `opacity` 挪到窗口自身的 alpha（见上），两者不再各走一套曲线；
+  DOM 的 `opacity` 退化成一道只在"完全收起"那一档落下的闸门，用来盖住
+  `show()` 之后那段扩展样式还没补回来、整窗不透明的空窗
 - 窗口尺寸与面板一致（1400×860），消除启动时的一次 resize
 
 ## [0.1.0] — 2026-09-14
