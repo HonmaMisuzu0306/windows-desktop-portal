@@ -3,9 +3,9 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [未发布]
+## [0.1.1] — 2026-09-15
 
-只做体验修补，没有新概念、没有新依赖。
+体验修补 + 两个用户报告的显示问题。没有新概念、没有新依赖。
 
 ### 新增
 
