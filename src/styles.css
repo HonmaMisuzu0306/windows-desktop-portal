@@ -62,10 +62,14 @@ body {
   padding: 16px 16px 14px;
   /* 容器本身不画背景，模块之间的缝隙才会露出（被模糊的）桌面 */
   background: none;
+  /* 进出动画只改 transform 和 opacity，两个都走合成器，不触发重排。
+     位移由 App.tsx 逐帧写入（同时驱动原生裁剪区域），这里不设 transition ——
+     两套时钟会让面板和它的原生裁剪错开一帧。 */
+  transform-origin: bottom center;
 }
 
-/* 收起时只剩屏幕底边一条 3px 的感应带，必须**完全不可见** ——
-   不画背景、不画高光边、不画拉手。用户平时不该感知到应用存在。 */
+/* 收起态：整个窗口被隐藏，DOM 停在动画终点（下移 + 全透明）。
+   窗口重新出现时 DOM 已经是这个样子，所以第一帧不可能是全亮的面板。 */
 .dock.is-collapsed {
   padding: 0;
   background: none;
@@ -210,6 +214,183 @@ body {
 
 .nav-item[data-on="true"] .nav-count {
   color: var(--accent);
+}
+
+/* ---------- ⭐ 收藏夹 ---------- */
+
+.nav-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 6px 12px;
+}
+
+.nav-group-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.nav-add {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition:
+    color 0.16s var(--spring),
+    background-color 0.16s var(--spring);
+}
+
+.nav-add:hover {
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
+/* 收藏夹行：分类按钮占满，✎/✕ 浮在右端，悬停才出现 */
+.fav {
+  position: relative;
+}
+
+.fav-acts {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: flex;
+  gap: 1px;
+  transform: translateY(-50%) scale(0.9);
+  opacity: 0;
+  transition:
+    opacity 0.16s var(--spring),
+    transform 0.16s var(--spring);
+}
+
+.fav:hover .fav-acts,
+.fav:focus-within .fav-acts {
+  opacity: 1;
+  transform: translateY(-50%);
+}
+
+/* 计数让位给按钮：两个都显示会叠在一起 */
+.fav:hover .nav-count,
+.fav:focus-within .nav-count {
+  opacity: 0;
+}
+
+.nav-count {
+  transition: opacity 0.16s var(--spring);
+}
+
+.fav-acts button {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.86);
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition:
+    color 0.14s,
+    background-color 0.14s;
+}
+
+.fav-acts button:hover {
+  color: var(--ink);
+  background: #fff;
+}
+
+.fav-acts button.rm:hover {
+  color: var(--danger);
+}
+
+/* 新建 / 重命名收藏夹的内联输入框 */
+.nav-edit {
+  width: 100%;
+  margin: 1px 0;
+  padding: 9px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: #fff;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--ink);
+  outline: none;
+}
+
+.nav-edit::placeholder {
+  color: var(--ink-3);
+}
+
+/* 删除确认。面积小、按钮近，所以用内联而不是弹窗 */
+.nav-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid rgba(196, 43, 28, 0.24);
+  border-radius: 10px;
+  background: rgba(196, 43, 28, 0.06);
+}
+
+.nav-confirm-text {
+  flex: 1 1 100%;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink);
+}
+
+/* 单独一行，不要再和标题挤成一句被折行的话 ——
+   "原文件不受影响"是用户按下删除前最需要看清的一句。 */
+.nav-confirm-note {
+  flex: 1 1 100%;
+  margin-top: -3px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink-3);
+}
+
+.nav-confirm button {
+  padding: 3px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.6);
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.nav-confirm button.ok {
+  border-color: transparent;
+  background: var(--danger);
+  color: #fff;
+}
+
+.nav-hint {
+  padding: 0 12px 4px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
 }
 
 .nav-sep {

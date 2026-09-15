@@ -15,8 +15,8 @@
       {
         "label": "main",
         "title": "Windows Desktop Portal",
-        "width": 900,
-        "height": 560,
+        "width": 1400,
+        "height": 860,
         "resizable": false,
         "decorations": false,
         "transparent": true,
@@ -24,7 +24,7 @@
         "skipTaskbar": true,
         "shadow": false,
         "center": false,
-        "visible": true,
+        "visible": false,
         "dragDropEnabled": true
       }
     ],

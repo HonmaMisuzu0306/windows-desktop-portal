@@ -1,3 +1,4 @@
+use std::sync::Mutex;
 use tauri::{LogicalPosition, LogicalSize, WebviewWindow};
 
 /// 不显示时把窗口**整个隐藏**，而不是缩成一条细带。
@@ -7,17 +8,105 @@ use tauri::{LogicalPosition, LogicalSize, WebviewWindow};
 ///
 /// 代价是隐藏后收不到任何鼠标事件 —— 唤醒改由全局轮询光标位置负责，
 /// 见 `main.rs` 里的 `spawn_edge_watcher`。
+///
+/// ⚠️ 收起时**不要**顺手清掉窗口区域。`SetWindowRgn(hwnd, NULL)` 会把窗口
+/// 变回整个矩形，而模块之间那几条缝 webview 从来没画过 —— 于是被裁掉的部分
+/// 重新暴露出来、又没有内容可画，屏幕上就是一下黑闪。
+///
+/// 但也不能指望"区域一直在"：tao 切换可见性时的样式重写带一个
+/// `SetWindowPos(SWP_FRAMECHANGED)`，**它会把自定义窗口区域整个丢掉**
+/// （实测显示之后有约 14 ms 窗口完全没有裁剪，整块 2100×1290 的矩形铺在桌面上）。
+/// 所以两个方向都要在事后把区域补回来，见下面 `reapply_region`。
 pub fn set_visible(window: &WebviewWindow, visible: bool) -> Result<(), String> {
     if visible {
-        window.show()
+        // 显示之前先补一次：`ShowWindow` 那一瞬间窗口就已经可见了
+        let _ = reapply_region(window);
+        window.show().map_err(|e| e.to_string())?;
     } else {
-        window.hide()
+        window.hide().map_err(|e| e.to_string())?;
     }
-    .map_err(|e| e.to_string())
+    // 两个方向都要重新摘一遍样式，不能只做 show：tao 每次切换可见性都会用
+    // `to_window_styles()` 把窗口样式整个重写一遍，而那套样式里带着 WS_CAPTION，
+    // 所以 hide() 之后样式会被**恢复**成"有标题栏"的样子躺在那里。
+    // 隐藏时也摘干净，show() 的那一瞬间就没有标题栏可画。见 enforce_frameless。
+    enforce_frameless(window)?;
+
+    if visible {
+        // ⚠️ 这一步不能省，也不能挪到别处 —— 它是"闪一下整个窗口"的根因。
+        // 理由见函数头的注释：样式重写会把区域丢掉，补不回来的话窗口在
+        // 显示后到前端下一帧 `set_panel_offset` 之间是完全没有裁剪的。
+        reapply_region(window)?;
+    }
+    Ok(())
+}
+
+/// 把 Windows 会自己画的那套非客户区**从窗口样式里真的摘掉**。
+///
+/// 背景：tao 创建无边框窗口时**并没有**去掉 `WS_CAPTION`。它靠窗口过程里
+/// `WM_NCCALCSIZE` 返回 0 把非客户区压成零高度，所以窗口样式里
+/// `WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX` 一直在。
+///
+/// 这是有代价的：只要有任何一次 `WM_NCCALCSIZE` 落到 `DefWindowProcW`
+/// （tao 在 `wParam == 0` 时就会这么做），系统就会按"这是个有标题栏的窗口"
+/// 重新算一遍非客户区，最小化/最大化/关闭三个按钮**真的**会被画出来。
+///
+/// 摘下 `WS_CAPTION` 之后非客户区恒为零（实测：窗口可见时客户端矩形始终等于
+/// 整个窗口矩形，一个像素的非客户区都不剩），`DefWindowProcW` 想画也没有地方画，
+/// 命中测试也不可能返回 `HTCAPTION`。这是把"永远不出现系统标题栏"从
+/// "但愿别触发"变成"结构上不可能"。
+///
+/// ⚠️ 这是一场持久战：tao 每次 show/hide 都会重写样式，所以两个方向都要重摘。
+/// `set_visible` 已经把它挂在了每次切换之后。
+#[cfg(target_os = "windows")]
+pub fn enforce_frameless(window: &WebviewWindow) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as _;
+
+    unsafe {
+        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+        let wanted = (style
+            & !(WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME))
+            | WS_POPUP
+            | WS_CLIPSIBLINGS;
+
+        let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        let wanted_ex = (ex
+            & !(WS_EX_WINDOWEDGE
+                | WS_EX_CLIENTEDGE
+                | WS_EX_DLGMODALFRAME
+                | WS_EX_STATICEDGE
+                | WS_EX_APPWINDOW))
+            | WS_EX_TOOLWINDOW;
+
+        // 没漂移就别惊动窗口：SWP_FRAMECHANGED 会触发一次重算和重绘
+        if style == wanted && ex == wanted_ex {
+            return Ok(());
+        }
+
+        SetWindowLongW(hwnd, GWL_STYLE, wanted as i32);
+        SetWindowLongW(hwnd, GWL_EXSTYLE, wanted_ex as i32);
+        // 不重算的话旧的（零高度的）客户区会一直沿用，直到下次尺寸变化才纠正
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn enforce_frameless(_window: &WebviewWindow) -> Result<(), String> {
+    Ok(())
 }
 
 /// 一个面板模块在窗口内的位置（**物理像素**，相对窗口客户区左上角）。
-#[derive(serde::Deserialize)]
+#[derive(Clone, Copy, serde::Deserialize)]
 pub struct PanelRect {
     pub x: i32,
     pub y: i32,
@@ -26,16 +115,47 @@ pub struct PanelRect {
     pub radius: i32,
 }
 
-/// 把窗口裁成若干个圆角矩形 —— 缝隙处窗口**根本不存在**。
+/// 窗口区域的完整状态：**不含动画位移的基准矩形** + **当前位移**。
 ///
-/// 这是"面板真模糊 + 缝隙真透明"能在单窗口下同时成立的唯一办法：
-/// `apply_blur` 是窗口级效果，会把整个窗口矩形（含缝隙）都模糊掉。
-/// 只有用窗口区域把缝隙挖掉，DWM 的模糊背景才会被一并裁掉，
-/// 缝隙处直接看到未处理的桌面。
+/// 两者必须存在一起。窗口每次显示都会把区域丢掉（原因见 `set_visible`），
+/// 补回来的时候得用**当前**的位移 —— 只看基准就等于把动画打回原点。
 ///
-/// 区域坐标必须是物理像素，且相对窗口客户区——前端用
-/// `getBoundingClientRect()` × `devicePixelRatio` 量出来传进来，
-/// 避免在 Rust 里重复一份 CSS 布局知识。
+/// 位移单独记还有一个好处：动画每帧只需要在基准上加减一个数，
+/// 不必每帧再回前端重新测量一遍所有模块的坐标。
+static REGION_STATE: Mutex<(Vec<PanelRect>, f64)> = Mutex::new((Vec::new(), 0.0));
+
+pub fn remember_base(rects: &[PanelRect]) {
+    let mut st = REGION_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    st.0 = rects.to_vec();
+}
+
+/// 把整块面板下移 `dy` **逻辑像素** 后重新裁剪 + 重新指定模糊区域。
+///
+/// 动画期间这个函数每帧被调一次：原生裁剪必须跟着 CSS 的 transform 走，
+/// 否则面板滑动时会被旧的区域切掉一条边。
+pub fn set_region_offset(window: &WebviewWindow, dy: f64) -> Result<(), String> {
+    {
+        let mut st = REGION_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        st.1 = dy;
+    }
+    reapply_region(window)
+}
+
+/// 用记住的「基准 + 当前位移」重新裁一次窗口。没有任何记住的东西时什么都不做 ——
+/// 面板还没渲染出来的时候乱裁一通比不裁更糟。
+pub fn reapply_region(window: &WebviewWindow) -> Result<(), String> {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let shifted: Vec<PanelRect> = {
+        let st = REGION_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if st.0.is_empty() {
+            return Ok(());
+        }
+        let offset = (st.1 * scale).round() as i32;
+        st.0.iter().map(|r| PanelRect { y: r.y + offset, ..*r }).collect()
+    };
+    set_region(window, &shifted)
+}
+
 /// 把若干圆角矩形合并成一个 HRGN。调用方负责 DeleteObject。
 #[cfg(target_os = "windows")]
 unsafe fn build_region(rects: &[PanelRect]) -> Option<windows_sys::Win32::Graphics::Gdi::HRGN> {
@@ -120,36 +240,8 @@ pub fn set_region(window: &WebviewWindow, rects: &[PanelRect]) -> Result<(), Str
     Ok(())
 }
 
-/// 收起时清掉区域裁剪和模糊，让窗口恢复成一条无效果的透明细带
-#[cfg(target_os = "windows")]
-pub fn clear_region(window: &WebviewWindow) -> Result<(), String> {
-    use windows_sys::Win32::Graphics::Dwm::{
-        DwmEnableBlurBehindWindow, DWM_BLURBEHIND, DWM_BB_ENABLE,
-    };
-    use windows_sys::Win32::Graphics::Gdi::SetWindowRgn;
-
-    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
-    let hwnd = hwnd.0 as _;
-    unsafe {
-        SetWindowRgn(hwnd, std::ptr::null_mut(), 1);
-        let bb = DWM_BLURBEHIND {
-            dwFlags: DWM_BB_ENABLE,
-            fEnable: 0,
-            hRgnBlur: std::ptr::null_mut(),
-            fTransitionOnMaximized: 0,
-        };
-        DwmEnableBlurBehindWindow(hwnd, &bb);
-    }
-    Ok(())
-}
-
 #[cfg(not(windows))]
 pub fn set_region(_window: &WebviewWindow, _rects: &[PanelRect]) -> Result<(), String> {
-    Ok(())
-}
-
-#[cfg(not(windows))]
-pub fn clear_region(_window: &WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
@@ -161,12 +253,8 @@ pub fn clear_region(_window: &WebviewWindow) -> Result<(), String> {
 /// 1400×860 在 1707×1067 的屏幕上占据 y≈207 以下，纵向覆盖中下部。
 pub const PANEL_W: f64 = 1400.0;
 pub const PANEL_H: f64 = 860.0;
-/// 收起后只剩屏幕底边一条**完全透明**的感应带。
-/// 3px 是"能稳定命中鼠标"和"人眼看不见"之间的折中 —— 它的背景由
-/// CSS 保证全透明，亚克力也在收起时被清掉，所以屏幕上不该有任何像素变化。
-pub const STRIP_H: f64 = 3.0;
 
-/// 把窗口摆到当前显示器底部居中，并按展开/收起切换高度。
+/// 把窗口摆到当前显示器底部居中。
 ///
 /// 两个必须处理的细节：
 ///
@@ -175,9 +263,9 @@ pub const STRIP_H: f64 = 3.0;
 ///    直接算会让窗口底边探出屏幕 1px，落在屏幕之外。
 ///
 /// 2. **每次布局后重新声明置顶**。任务栏同样是 topmost 窗口，它会重新
-///    抢到 z 序顶端，把我们的感应带整条盖住 —— 那样边缘唤醒永远不会触发，
+///    抢到 z 序顶端，把面板下沿整条盖住 —— 那样边缘唤醒永远不会触发，
 ///    因为鼠标事件全被任务栏吃掉了。
-pub fn layout(window: &WebviewWindow, expanded: bool) -> Result<(), String> {
+pub fn layout(window: &WebviewWindow) -> Result<(), String> {
     let monitor = window
         .current_monitor()
         .map_err(|e| e.to_string())?
@@ -189,11 +277,18 @@ pub fn layout(window: &WebviewWindow, expanded: bool) -> Result<(), String> {
 
     // 屏幕比面板窄时（小屏/分屏）收缩到屏幕宽度，避免横向溢出
     let w = PANEL_W.min(screen.width);
-    let h = if expanded { PANEL_H.min(screen.height) } else { STRIP_H };
+    let h = PANEL_H.min(screen.height);
 
-    window
-        .set_size(LogicalSize::new(w, h))
-        .map_err(|e| e.to_string())?;
+    // 尺寸到顶就不要再发一次 set_size：透明窗口重设尺寸会让新露出来的
+    // 那一块先以未绘制状态出现（就是"黑闪"）。收起不改尺寸，
+    // 所以这里能省则省。
+    let current = window
+        .inner_size()
+        .map(|s| s.to_logical::<f64>(scale))
+        .unwrap_or(LogicalSize::new(0.0, 0.0));
+    if (current.width - w).abs() > 0.5 || (current.height - h).abs() > 0.5 {
+        window.set_size(LogicalSize::new(w, h)).map_err(|e| e.to_string())?;
+    }
 
     // 读回实际外框高度来定位，绕开 DPI 取整
     let outer_h = window
@@ -210,6 +305,8 @@ pub fn layout(window: &WebviewWindow, expanded: bool) -> Result<(), String> {
 
     // 任务栏会重新抢 topmost；每次布局后重新声明一次
     let _ = window.set_always_on_top(true);
+    // 布局会触发 tao 重算窗口样式，顺手确认一次无边框没有被带回来
+    enforce_frameless(window)?;
 
     Ok(())
 }

@@ -4,6 +4,7 @@ mod config;
 mod desktop;
 mod desktop_icons;
 mod dock;
+mod hotkey;
 mod icons;
 mod sync;
 
@@ -292,6 +293,40 @@ fn rename_item(
     Ok(cfg)
 }
 
+/// 新建收藏夹。**只建一个空的映射容器** —— 不建目录、不移动任何文件。
+#[tauri::command]
+fn create_category(app: AppHandle, name: String) -> Result<AppConfig, String> {
+    let mut cfg = read_or_fail(&app)?;
+    config::add_category(&mut cfg, &name)?;
+    write(&app, &cfg)?;
+    Ok(cfg)
+}
+
+#[tauri::command]
+fn rename_category(app: AppHandle, category_id: String, name: String) -> Result<AppConfig, String> {
+    let mut cfg = read_or_fail(&app)?;
+    config::rename_category(&mut cfg, &category_id, &name)?;
+    write(&app, &cfg)?;
+    Ok(cfg)
+}
+
+/// 删除收藏夹。里面如果是桌面来源的条目，顺手同步一次，
+/// 让它们**立刻**回到「桌面」分类 —— 否则文件看起来"消失"了，
+/// 而这个程序最重要的承诺恰恰是"文件一直好好的"。
+#[tauri::command]
+fn delete_category(app: AppHandle, category_id: String) -> Result<AppConfig, String> {
+    let mut cfg = read_or_fail(&app)?;
+    config::remove_category(&mut cfg, &category_id)?;
+    // 同步失败（扫描出错 / 触发批量删除保护）不影响删除本身，下次启动还会再同步
+    if let Ok(r) = sync_desktop_into(&mut cfg, false) {
+        if r.changed() {
+            eprintln!("[sync] 删除收藏夹后回收 +{} -{}", r.added, r.removed);
+        }
+    }
+    write(&app, &cfg)?;
+    Ok(cfg)
+}
+
 /// 打开目标，并把这次访问记进最近记录。
 #[tauri::command]
 fn open_item(app: AppHandle, path: String) -> Result<AppConfig, String> {
@@ -482,20 +517,25 @@ fn quit_app(app: AppHandle) {
 /// 面板当前是否处于隐藏（收起）状态。全局轮询线程靠它决定要不要唤醒。
 static DOCK_HIDDEN: AtomicBool = AtomicBool::new(false);
 
+/// 展开 / 收起面板。**这里只管窗口，动画归前端。**
+///
+/// 两个顺序上的讲究：
+///
+/// 1. 展开时先把尺寸位置摆好（此时窗口还不可见），再显示 —— 避免"先出现在
+///    错误的位置和尺寸上、下一帧才跳到位"。
+/// 2. 收起时**只隐藏，不清窗口区域**。清区域会把窗口变回整个矩形，
+///    而模块之间那几条缝 webview 从来没画过 —— 被裁掉的部分重新暴露出来
+///    又没有内容可画，就是那一下黑闪。区域留着不动，下次显示时它本来就是对的。
 #[tauri::command]
 fn set_dock_expanded(window: WebviewWindow, expanded: bool) -> Result<(), String> {
     if expanded {
-        // 先显示再布局：隐藏状态下 set_size/set_position 也能生效，
-        // 但先 show 能让它一次性出现在正确位置，不闪
-        let _ = dock::set_visible(&window, true);
+        dock::layout(&window)?;
         DOCK_HIDDEN.store(false, Ordering::SeqCst);
-        dock::layout(&window, true)
+        dock::set_visible(&window, true)
     } else {
-        let _ = dock::clear_region(&window);
-        // 直接隐藏，屏幕上不留任何像素
-        let _ = dock::set_visible(&window, false);
+        let r = dock::set_visible(&window, false);
         DOCK_HIDDEN.store(true, Ordering::SeqCst);
-        Ok(())
+        r
     }
 }
 
@@ -545,8 +585,12 @@ fn spawn_edge_watcher(app: AppHandle) {
 
 /// 前端量出三个模块的位置后调这个，把窗口裁成三块圆角矩形。
 /// 缝隙处窗口不存在 → 露出**未被模糊的**桌面。
+///
+/// 同时把这份坐标记成"基准位置"：进出动画每帧只需要在它上面加一个位移，
+/// 不必再回前端重新测量一遍。
 #[tauri::command]
 fn set_panel_regions(window: WebviewWindow, rects: Vec<dock::PanelRect>) -> Result<(), String> {
+    dock::remember_base(&rects);
     match dock::set_region(&window, &rects) {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -555,6 +599,15 @@ fn set_panel_regions(window: WebviewWindow, rects: Vec<dock::PanelRect>) -> Resu
             Err(e)
         }
     }
+}
+
+/// 动画的每一帧调一次：面板整体下移 `dy` 逻辑像素时，窗口区域和模糊区域跟着走。
+///
+/// 不跟着走的话，滑动中的面板会被旧的裁剪区域切掉一条边 —— 那才是"网页元素
+/// 突然显示/隐藏"那种廉价感的真正来源。每帧只发一个数字，测量留在前端。
+#[tauri::command]
+fn set_panel_offset(window: WebviewWindow, dy: f64) -> Result<(), String> {
+    dock::set_region_offset(&window, dy)
 }
 
 #[tauri::command]
@@ -580,6 +633,9 @@ fn main() {
             add_paths,
             remove_item,
             rename_item,
+            create_category,
+            rename_category,
+            delete_category,
             open_item,
             clear_recent,
             set_settings,
@@ -592,6 +648,7 @@ fn main() {
             quit_app,
             get_icons,
             set_panel_regions,
+            set_panel_offset,
         ])
         .setup(|app| {
             let win = app.get_webview_window("main").expect("主窗口缺失");
@@ -607,10 +664,17 @@ fn main() {
             // 现在收起走的是 dock::set_visible → window.hide()，整窗消失、
             // 感应带不复存在，这个调用连同它要解决的问题一起作废了。
 
-            dock::layout(&win, true).map_err(|e| e.to_string())?;
+            // 窗口在 tauri.conf.json 里是 visible: false 创建的，第一次显示由这里负责。
+            // 这样第一帧就已经是无边框的 —— 否则创建到 setup 之间那一小段，
+            // 窗口是"可见 + 带 WS_CAPTION"的，启动时会闪一下标题栏。
+            dock::layout(&win)?;
+            dock::set_visible(&win, true)?;
 
             // 隐藏状态下收不到鼠标事件，只能靠轮询光标来唤醒
             spawn_edge_watcher(app.handle().clone());
+
+            // 全局快捷键 Alt+`：面板关着的时候也能一键唤出
+            hotkey::spawn(app.handle().clone());
 
             Ok(())
         })

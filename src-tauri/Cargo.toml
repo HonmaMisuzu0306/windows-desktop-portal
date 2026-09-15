@@ -28,6 +28,9 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Shell",
     "Win32_System_Com",
     "Win32_UI_WindowsAndMessaging",
+    # RegisterHotKey / VK_OEM_3 / MOD_ALT 都在这个模块里（不在 WindowsAndMessaging）。
+    # 全局快捷键 Alt+` 用它注册到一个自己的线程上。
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_Graphics_Gdi",
     # DwmEnableBlurBehindWindow 支持 hRgnBlur —— 只在指定区域做模糊。
     # 这是"面板真模糊 + 缝隙真透明"能同时成立的唯一途径：

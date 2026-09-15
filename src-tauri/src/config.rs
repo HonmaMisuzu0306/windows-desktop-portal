@@ -5,9 +5,13 @@ use std::path::Path;
 /// 桌面映射分类。由同步引擎掌管，始终排在最前。
 pub const DESKTOP_CATEGORY: (&str, &str) = ("desktop", "桌面");
 
-/// 四个固定的人工分类。MVP 不支持增删分类，只管理分类里的条目。
+/// 四个固定的人工分类。它们和「桌面」一样由 `normalize()` 保证存在，不允许改名或删除。
 pub const DEFAULT_CATEGORIES: [(&str, &str); 4] =
     [("study", "学习"), ("project", "项目"), ("mad", "MAD"), ("fun", "娱乐")];
+
+/// 用户自建收藏夹的最大名字长度（**字符数**，不是字节数）。
+/// 侧栏只有 196px 宽，放任下去只会让界面变成一坨。
+pub const MAX_CATEGORY_NAME: usize = 10;
 
 pub const MAX_RECENT: usize = 20;
 
@@ -192,12 +196,95 @@ pub fn desktop_id(path: &str) -> String {
     format!("d{:016x}", fnv1a64(norm_path(path).as_bytes()))
 }
 
-pub fn uid() -> String {
-    let nanos = std::time::SystemTime::now()
+fn nanos() -> u128 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("i{nanos}")
+        .unwrap_or(0)
+}
+
+pub fn uid() -> String {
+    format!("i{}", nanos())
+}
+
+/// 用户自建收藏夹的 id。前缀 `u` 让"这是用户建的"在 config.json 里肉眼可辨，
+/// 不必靠跟固定表比对才能看出来。
+pub fn category_uid() -> String {
+    format!("u{}", nanos())
+}
+
+/// 内置分类（「桌面」+ 四个固定分类）。它们由 `normalize()` 保证存在，
+/// 因此既不该被删除，也不该被改名 —— 改了下次加载会被 `normalize()` 用回原名，
+/// 表现为"改了又自己变回去"。
+pub fn is_builtin_category(id: &str) -> bool {
+    id == DESKTOP_CATEGORY.0 || DEFAULT_CATEGORIES.iter().any(|(i, _)| *i == id)
+}
+
+/// 收藏夹名字的归一化与校验。空名和超长名都在这里挡掉。
+/// **只重排空白，不做任何静默截断** —— 截断会让用户看着自己输入的名字被改掉。
+fn clean_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err("名字不能为空".into());
+    }
+    if name.chars().count() > MAX_CATEGORY_NAME {
+        return Err(format!("名字最多 {MAX_CATEGORY_NAME} 个字"));
+    }
+    Ok(name.to_string())
+}
+
+/// 两个收藏夹同名会让侧栏看起来像出了 bug，所以直接拒绝重名。
+fn name_taken(cfg: &AppConfig, name: &str, except_id: Option<&str>) -> bool {
+    cfg.categories
+        .iter()
+        .any(|c| c.name == name && Some(c.id.as_str()) != except_id)
+}
+
+/// 新建收藏夹，返回它的 id。**只建一个空的映射容器，不碰文件系统。**
+pub fn add_category(cfg: &mut AppConfig, raw_name: &str) -> Result<String, String> {
+    let name = clean_name(raw_name)?;
+    if name_taken(cfg, &name, None) {
+        return Err(format!("已经有叫「{name}」的分类了"));
+    }
+    // 纳秒理论上可能撞（同一纳秒内连建两个），撞了就再取一次。
+    let mut id = category_uid();
+    while cfg.categories.iter().any(|c| c.id == id) {
+        id = category_uid();
+    }
+    cfg.categories.push(Category { id: id.clone(), name, items: Vec::new() });
+    Ok(id)
+}
+
+pub fn rename_category(cfg: &mut AppConfig, id: &str, raw_name: &str) -> Result<(), String> {
+    if is_builtin_category(id) {
+        return Err("内置分类不能改名".into());
+    }
+    let name = clean_name(raw_name)?;
+    if name_taken(cfg, &name, Some(id)) {
+        return Err(format!("已经有叫「{name}」的分类了"));
+    }
+    let Some(cat) = cfg.categories.iter_mut().find(|c| c.id == id) else {
+        return Err("分类不存在".into());
+    };
+    cat.name = name;
+    Ok(())
+}
+
+/// 删除收藏夹。**只删映射，不动任何原始文件。**
+///
+/// 里面的 `Desktop` 条目不需要写进忽略名单：下次同步会发现它们"没被任何分类认领"，
+/// 于是重新放回「桌面」分类 —— 那正是"这个收藏夹没了，但文件还在"应有的样子。
+/// 写进忽略名单反而会让它们永远回不来。
+pub fn remove_category(cfg: &mut AppConfig, id: &str) -> Result<(), String> {
+    if is_builtin_category(id) {
+        return Err("内置分类不能删除".into());
+    }
+    let before = cfg.categories.len();
+    cfg.categories.retain(|c| c.id != id);
+    if cfg.categories.len() == before {
+        return Err("分类不存在".into());
+    }
+    Ok(())
 }
 
 pub fn detect_kind(path: &str) -> ItemKind {
@@ -320,6 +407,78 @@ mod tests {
         assert_eq!(ids[0], DESKTOP_CATEGORY.0);
         assert_eq!(ids[ids.len() - 1], "custom", "未知分类应保留且排在已知分类之后");
         assert!(ids.contains(&"study"));
+    }
+
+    #[test]
+    fn user_categories_keep_their_order_through_normalize() {
+        let mut cfg = AppConfig::default();
+        add_category(&mut cfg, "摄影").unwrap();
+        add_category(&mut cfg, "实习").unwrap();
+        add_category(&mut cfg, "MAD工程").unwrap();
+
+        cfg.normalize();
+
+        let tail: Vec<&str> = cfg.categories[5..].iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(tail, ["摄影", "实习", "MAD工程"], "收藏夹顺序是用户自己排的，不能被重排");
+        assert_eq!(cfg.categories.len(), 8, "四个固定 + 桌面 + 三个收藏夹");
+    }
+
+    #[test]
+    fn add_category_rejects_blank_long_and_duplicate_names() {
+        let mut cfg = AppConfig::default();
+
+        assert!(add_category(&mut cfg, "   ").is_err(), "空名要挡掉");
+        assert!(add_category(&mut cfg, &"字".repeat(MAX_CATEGORY_NAME + 1)).is_err());
+        assert!(add_category(&mut cfg, "学习").is_err(), "不能和内置分类重名");
+
+        add_category(&mut cfg, "摄影").unwrap();
+        assert!(add_category(&mut cfg, "摄影").is_err(), "不能重名");
+        assert!(add_category(&mut cfg, " 摄影 ").is_err(), "去掉空白后重名同样要挡");
+        assert_eq!(cfg.categories.len(), 6, "被拒绝的三次一个都不该进配置");
+    }
+
+    #[test]
+    fn rename_cannot_touch_builtin_categories() {
+        let mut cfg = AppConfig::default();
+        for id in ["desktop", "study", "project", "mad", "fun"] {
+            assert!(is_builtin_category(id));
+            assert!(rename_category(&mut cfg, id, "新名字").is_err());
+            assert!(remove_category(&mut cfg, id).is_err());
+        }
+    }
+
+    /// 删收藏夹只删映射，文件不动；里面的桌面条目下次同步会被放回「桌面」。
+    #[test]
+    fn removing_category_only_drops_the_mapping() {
+        let mut cfg = AppConfig::default();
+        let id = add_category(&mut cfg, "摄影").unwrap();
+        cfg.categories
+            .iter_mut()
+            .find(|c| c.id == id)
+            .unwrap()
+            .items
+            .push(Item {
+                id: "d1".into(),
+                name: "照片".into(),
+                path: "C:\\Users\\A\\Desktop\\照片".into(),
+                kind: ItemKind::Folder,
+                source: ItemSource::Desktop,
+            });
+
+        remove_category(&mut cfg, &id).unwrap();
+
+        assert!(!cfg.categories.iter().any(|c| c.id == id));
+        assert!(cfg.ignored.is_empty(), "绝不能把桌面条目写进忽略名单，否则它永远回不到「桌面」");
+
+        // 下次同步：没被任何分类认领 → 重新放回「桌面」
+        let scanned = vec![crate::desktop::Scanned {
+            path: "C:\\Users\\A\\Desktop\\照片".into(),
+            name: "照片".into(),
+            kind: ItemKind::Folder,
+        }];
+        crate::sync::sync(&mut cfg, &scanned);
+        let desktop = cfg.categories.iter().find(|c| c.id == DESKTOP_CATEGORY.0).unwrap();
+        assert_eq!(desktop.items.len(), 1, "文件还在，就应该重新出现在「桌面」里");
     }
 
     #[test]

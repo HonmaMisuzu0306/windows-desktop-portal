@@ -10,9 +10,66 @@ const COLLAPSE_DELAY = 700;
 /** 超过这个位移才算拖拽，否则算点击。Windows 自己的 SM_CXDRAG 就是 4。 */
 const DRAG_THRESHOLD = 4;
 
-/** 侧边栏里人工分类的展示顺序。「最近」和「桌面」单独排在后面。 */
+/** 侧边栏里人工分类的展示顺序。「桌面」和收藏夹另行处理。 */
 const NAV_ORDER = ["study", "project", "mad", "fun"] as const;
 const DESKTOP_ID = "desktop";
+/** 内置分类。**不在这个集合里的就是用户自建的收藏夹。** */
+const BUILTIN = new Set<string>([...NAV_ORDER, DESKTOP_ID]);
+
+// ── 进出动画 ────────────────────────────────────────────────────
+/**
+ * 动画起点时面板整体下移的距离（逻辑像素）。
+ * 40px 足够看出"从屏幕底边升上来"，又不至于让面板飞一大截。
+ */
+const SLIDE = 40;
+/** 展开 / 收起时长。Windows 自己的浮出面板也落在这一档。 */
+const ENTER_MS = 200;
+const EXIT_MS = 180;
+
+/** 内联的名字输入框（新建 / 重命名收藏夹共用）。
+ *
+ * `done` 这个闸门是必须的：回车提交之后输入框会失焦，blur 会**再提交一次**；
+ * Esc 取消之后失焦又会把草稿提交上去。先落闸，两个入口就都只生效一次。 */
+function NameEditor({
+  initial,
+  placeholder,
+  onCommit,
+  onCancel,
+}: {
+  initial: string;
+  placeholder: string;
+  onCommit: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initial);
+  const done = useRef(false);
+
+  const finish = (commit: boolean) => {
+    if (done.current) return;
+    done.current = true;
+    const name = value.trim();
+    if (commit && name) onCommit(name);
+    else onCancel();
+  };
+
+  return (
+    <input
+      className="nav-edit"
+      autoFocus
+      placeholder={placeholder}
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      // 输入框在导航里，不挡住这些事件的话会触发页内拖拽
+      onPointerDown={(e) => e.stopPropagation()}
+      onBlur={() => finish(true)}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") finish(true);
+        if (e.key === "Escape") finish(false);
+      }}
+    />
+  );
+}
 
 export default function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -27,6 +84,18 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   // path → 原生图标 data URL（null 表示取失败，退回几何图形）
   const [icons, setIcons] = useState<Map<string, string | null>>(new Map());
+
+  // ── 收藏夹的三种内联编辑状态 ──────────────────────────────
+  // 只允许同时存在一种，所以用一个联合值就够了
+  const [editing, setEditing] = useState<
+    { mode: "create" } | { mode: "rename"; id: string } | { mode: "confirm"; id: string } | null
+  >(null);
+
+  // ── 面板进出动画 ──────────────────────────────────────────
+  const dockRef = useRef<HTMLDivElement | null>(null);
+  const rafRef = useRef(0);
+  /** 当前位移。收起态 = SLIDE（不可见），展开态 = 0。 */
+  const dyRef = useRef(0);
 
   // ── 页内拖拽状态 ──────────────────────────────────────────
   const [dragItem, setDragItem] = useState<Item | null>(null);
@@ -116,6 +185,13 @@ export default function App() {
     if (!expanded) return;
     const push = () => {
       const dpr = window.devicePixelRatio || 1;
+      // 量之前先把动画位移摘掉：getBoundingClientRect 会把 transform 算进去，
+      // 而我们要交给 Rust 的是**不含位移的基准位置**（位移另外用 setPanelOffset 叠加）。
+      // 改完同一个 tick 内就恢复，合成器看不到这一下。
+      const root = dockRef.current;
+      const saved = root?.style.transform ?? "";
+      if (root) root.style.transform = "none";
+
       const rects = Array.from(document.querySelectorAll<HTMLElement>(".module")).map((el) => {
         const r = el.getBoundingClientRect();
         // border-radius 的 CSS 值 ×2 才是 CreateRoundRectRgn 要的椭圆直径
@@ -128,6 +204,8 @@ export default function App() {
           radius: Math.round(2 * br * dpr),
         };
       });
+
+      if (root) root.style.transform = saved;
       if (rects.length) void api.setPanelRegions(rects).catch(() => {});
     };
     // 等窗口 resize 和布局都稳定下来再量
@@ -142,15 +220,52 @@ export default function App() {
     // 区域裁剪和毛玻璃就永远不会被施加。
   }, [expanded, tab, config]);
 
-  // 幂等：状态没变就不发 IPC。错误不再静默吞掉。
-  const applyExpanded = useCallback(
-    (want: boolean) => {
-      if (expandedRef.current === want) return;
-      expandedRef.current = want;
-      setExpanded(want);
-      api.setDockExpanded(want).catch(fail);
+  // ── 位移 → 视觉 ─────────────────────────────────────────────
+  // 只用 transform 和 opacity：两个都不触发重排，交给合成器做。
+  // 位移同时驱动透明度，两者永远不会脱节。
+  const applyVisual = useCallback((dy: number, animating: boolean) => {
+    const el = dockRef.current;
+    if (el) {
+      el.style.willChange = animating ? "transform, opacity" : "";
+      el.style.transform = dy === 0 ? "" : `translate3d(0, ${dy}px, 0)`;
+      el.style.opacity = dy === 0 ? "" : String(Math.max(0, 1 - dy / SLIDE));
+    }
+    // 原生裁剪区域必须跟 CSS 的位移同帧更新，否则滑动中的面板会被旧的区域切边 ——
+    // 那种"被裁掉一条"的违和感，正是以前像网页元素闪现的原因之一。
+    void api.setPanelOffset(dy).catch(() => {});
+  }, []);
+
+  const tween = useCallback(
+    (to: number, ms: number, done?: () => void) => {
+      cancelAnimationFrame(rafRef.current);
+      const from = dyRef.current;
+      if (from === to) {
+        applyVisual(to, false);
+        done?.();
+        return;
+      }
+      const t0 = performance.now();
+      const step = (now: number) => {
+        // 夹在 [0,1]：rAF 回调拿到的是**这一帧的开始时刻**，可能早于我们记的 t0。
+        // 不夹的话 p 会是负数，缓动曲线把面板推到起点之外（实测多走了 2.7px），
+        // 表现成动画第一下先"弹"一下。
+        const p = Math.min(1, Math.max(0, (now - t0) / ms));
+        // ease-out：起步快、收尾稳，和 Windows 浮出面板同一手感
+        const dy = from + (to - from) * (1 - Math.pow(1 - p, 3));
+        dyRef.current = dy;
+        const running = p < 1;
+        applyVisual(dy, running);
+        if (running) {
+          rafRef.current = requestAnimationFrame(step);
+        } else {
+          dyRef.current = to;
+          applyVisual(to, false);
+          done?.();
+        }
+      };
+      rafRef.current = requestAnimationFrame(step);
     },
-    [fail],
+    [applyVisual],
   );
 
   const expand = useCallback(() => {
@@ -160,14 +275,34 @@ export default function App() {
       window.clearTimeout(timer.current);
       timer.current = null;
     }
-    applyExpanded(true);
-  }, [applyExpanded]);
+    if (expandedRef.current) return;
+    expandedRef.current = true;
+    setExpanded(true);
+
+    // 顺序要紧：先把原生裁剪摆到动画起点，再显示窗口。
+    // 反过来窗口会先以"最终位置、接近全亮"的样子露出一帧 —— 那就是闪。
+    void api
+      .setPanelOffset(SLIDE)
+      .then(() => api.setDockExpanded(true))
+      .then(() => tween(0, ENTER_MS))
+      .catch(fail);
+  }, [fail, tween]);
 
   const collapse = useCallback(() => {
     if (timer.current !== null) window.clearTimeout(timer.current);
     timer.current = null;
-    applyExpanded(false);
-  }, [applyExpanded]);
+    if (!expandedRef.current) return;
+    expandedRef.current = false;
+    setExpanded(false);
+    // 动画跑完才隐藏窗口；收起时窗口不动尺寸、不清区域，
+    // 所以下次展开的几何和区域都还是对的
+    tween(SLIDE, EXIT_MS, () => void api.setDockExpanded(false).catch(fail));
+  }, [fail, tween]);
+
+  const toggle = useCallback(() => {
+    if (expandedRef.current) collapse();
+    else expand();
+  }, [collapse, expand]);
 
   // 收起时窗口被整个隐藏，收不到任何鼠标事件。
   // Rust 侧轮询到光标贴住屏幕底边时发这个事件，我们负责把它展开。
@@ -178,14 +313,22 @@ export default function App() {
     };
   }, [expand]);
 
+  // 全局快捷键 Ctrl+Alt+Q：面板关着也能唤出，已展开则收起
+  useEffect(() => {
+    const un = listen("hotkey-toggle", () => toggle());
+    return () => {
+      void un.then((f) => f());
+    };
+  }, [toggle]);
+
   const scheduleCollapse = useCallback(() => {
     if (!autoHideRef.current) return;
     if (timer.current !== null) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => {
       timer.current = null;
-      applyExpanded(false);
+      collapse();
     }, COLLAPSE_DELAY);
-  }, [applyExpanded]);
+  }, [collapse]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -256,6 +399,34 @@ export default function App() {
       })
       .catch(fail)
       .finally(() => setBusy(false));
+  };
+
+  // ── 收藏夹 ──────────────────────────────────────────────────
+  // 三个操作都只改配置里的映射关系，一个文件都不会被移动、复制或删除。
+
+  const createFavorite = (name: string) => {
+    setEditing(null);
+    api
+      .createCategory(name)
+      .then((c) => {
+        apply(c);
+        // 建完直接跳过去：新收藏夹是空的，正好接着往里拖东西
+        const made = c.categories.find((x) => x.name === name);
+        if (made) setTab(made.id);
+      })
+      .catch(fail);
+  };
+
+  const renameFavorite = (id: string, name: string) => {
+    setEditing(null);
+    void run(api.renameCategory(id, name));
+  };
+
+  const deleteFavorite = (id: string) => {
+    setEditing(null);
+    // 正在看的就是它 → 退回「桌面」，否则内容区会空成一片
+    if (tabRef.current === id) setTab(DESKTOP_ID);
+    void run(api.deleteCategory(id));
   };
 
   // ── 页内拖拽实现 ────────────────────────────────────────────
@@ -400,7 +571,7 @@ export default function App() {
   // 配置损坏：绝不静默重置，把决定权交给用户
   if (fatal) {
     return (
-      <div className="dock">
+      <div className="dock" ref={dockRef}>
         <div className="fatal">
           <p className="fatal-title">配置文件有问题，已进入只读模式</p>
           <p className="fatal-msg">{fatal}</p>
@@ -423,23 +594,42 @@ export default function App() {
   // 配置加载完成前也必须能响应悬停——否则若鼠标已经在底部，
   // 加载完成后不会补发 mouseenter，dock 就再也打不开了。
   if (!config) {
-    return <div className="dock is-collapsed" onMouseEnter={expand} />;
+    return <div className="dock is-collapsed" ref={dockRef} onMouseEnter={expand} />;
   }
 
-  // 导航顺序按需求定：四个人工分类 → 桌面。最近访问已独立成模块，不再占导航位。
+  // 导航顺序按需求定：四个人工分类 → ⭐收藏夹 → 桌面。
+  // 「最近访问」已独立成模块，不再占导航位。
   const navCats = NAV_ORDER.map((id) => config.categories.find((c) => c.id === id)).filter(
     (c): c is Category => !!c,
   );
   const desktopCat = config.categories.find((c) => c.id === DESKTOP_ID);
+  const favorites = config.categories.filter((c) => !BUILTIN.has(c.id));
   const activeCat = config.categories.find((c) => c.id === tab);
   const showGrid = !!activeCat;
   const quickRecent = config.recent.slice(0, 12);
 
+  /** 一个可拖入的分类按钮。内置分类和收藏夹长得一样，只是后者多了两个小按钮。 */
+  const catButton = (c: Category) => (
+    <button
+      key={c.id}
+      className="nav-item"
+      data-on={tab === c.id}
+      data-cat={c.id}
+      data-drop={dropTarget === c.id ? "true" : undefined}
+      onClick={() => {
+        setTab(c.id);
+        expand();
+      }}
+    >
+      <span className="nav-name">{c.name}</span>
+      {c.items.length > 0 && <span className="nav-count">{c.items.length}</span>}
+    </button>
+  );
+
   return (
     <div
-      className={`dock${expanded ? "" : " is-collapsed"}${
-        dragging || dragItem ? " is-dragging" : ""
-      }`}
+      className={`dock${dragging || dragItem ? " is-dragging" : ""}`}
+      ref={dockRef}
       onMouseEnter={expand}
       onMouseLeave={() => {
         // 两种拖拽都要挡住：dragging 是资源管理器拖入，dragItem 是页内拖拽
@@ -451,41 +641,80 @@ export default function App() {
         <div className="brand">桌面收纳</div>
 
         <nav className="nav">
-          {navCats.map((c) => (
+          {navCats.map(catButton)}
+
+          <div className="nav-sep" />
+
+          {/* ⭐ 收藏夹：数量不限，新建 / 重命名 / 删除都在这一小块里完成 */}
+          <div className="nav-group">
+            <span className="nav-group-title">⭐ 收藏夹</span>
             <button
-              key={c.id}
-              className="nav-item"
-              data-on={tab === c.id}
-              data-cat={c.id}
-              data-drop={dropTarget === c.id ? "true" : undefined}
-              onClick={() => {
-                setTab(c.id);
-                expand();
-              }}
+              className="nav-add"
+              title="新建收藏夹"
+              onClick={() => setEditing({ mode: "create" })}
             >
-              <span className="nav-name">{c.name}</span>
-              {c.items.length > 0 && <span className="nav-count">{c.items.length}</span>}
+              ＋
             </button>
-          ))}
+          </div>
+
+          {favorites.map((c) =>
+            editing?.mode === "rename" && editing.id === c.id ? (
+              <NameEditor
+                key={c.id}
+                initial={c.name}
+                placeholder="收藏夹名字"
+                onCommit={(name) => renameFavorite(c.id, name)}
+                onCancel={() => setEditing(null)}
+              />
+            ) : editing?.mode === "confirm" && editing.id === c.id ? (
+              <div className="nav-confirm" key={c.id}>
+                <span className="nav-confirm-text">删除「{c.name}」？</span>
+                {/* 这个程序最怕被误解成"会动我的文件"，所以这一句必须在场 */}
+                <span className="nav-confirm-note">原文件不会被删除</span>
+                <button className="ok" onClick={() => deleteFavorite(c.id)}>
+                  删除
+                </button>
+                <button onClick={() => setEditing(null)}>取消</button>
+              </div>
+            ) : (
+              <div className="fav" key={c.id}>
+                {catButton(c)}
+                <span className="fav-acts">
+                  <button
+                    title="重命名"
+                    onClick={() => setEditing({ mode: "rename", id: c.id })}
+                  >
+                    ✎
+                  </button>
+                  <button
+                    className="rm"
+                    title="删除收藏夹"
+                    onClick={() => setEditing({ mode: "confirm", id: c.id })}
+                  >
+                    ✕
+                  </button>
+                </span>
+              </div>
+            ),
+          )}
+
+          {editing?.mode === "create" && (
+            <NameEditor
+              initial=""
+              placeholder="收藏夹名字"
+              onCommit={createFavorite}
+              onCancel={() => setEditing(null)}
+            />
+          )}
+
+          {favorites.length === 0 && editing?.mode !== "create" && (
+            <p className="nav-hint">点 ＋ 新建一个</p>
+          )}
 
           {desktopCat && (
             <>
               <div className="nav-sep" />
-              <button
-                className="nav-item"
-                data-on={tab === desktopCat.id}
-                data-cat={desktopCat.id}
-                data-drop={dropTarget === desktopCat.id ? "true" : undefined}
-                onClick={() => {
-                  setTab(desktopCat.id);
-                  expand();
-                }}
-              >
-                <span className="nav-name">{desktopCat.name}</span>
-                {desktopCat.items.length > 0 && (
-                  <span className="nav-count">{desktopCat.items.length}</span>
-                )}
-              </button>
+              {catButton(desktopCat)}
             </>
           )}
         </nav>
@@ -527,7 +756,8 @@ export default function App() {
             >
               ⋯
             </button>
-            <button className="icon" title="收起 (Esc)" onClick={collapse}>
+            {/* 跟光标贴底边的唤醒是一回事，写出来用户才知道有这条路 */}
+            <button className="icon" title="收起（Esc / Ctrl+Alt+Q）" onClick={collapse}>
               ⌄
             </button>
             <button

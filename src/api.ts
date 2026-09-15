@@ -34,6 +34,18 @@ export const refreshDesktop = () => invoke<AppConfig>("refresh_desktop");
 export const moveItem = (itemId: string, toCategoryId: string) =>
   invoke<AppConfig>("move_item", { itemId, toCategoryId });
 
+// ── 收藏夹 ────────────────────────────────────────────────────
+// 三个命令都只动配置里的映射，绝不碰文件系统。
+
+export const createCategory = (name: string) =>
+  invoke<AppConfig>("create_category", { name });
+
+export const renameCategory = (categoryId: string, name: string) =>
+  invoke<AppConfig>("rename_category", { categoryId, name });
+
+export const deleteCategory = (categoryId: string) =>
+  invoke<AppConfig>("delete_category", { categoryId });
+
 /** 隐藏/显示桌面图标。系统级设置，失败会 reject。 */
 export const setHideDesktopIcons = (hidden: boolean) =>
   invoke<AppConfig>("set_hide_desktop_icons", { hidden });
@@ -58,3 +70,10 @@ export interface PanelRect {
 
 export const setPanelRegions = (rects: PanelRect[]) =>
   invoke<void>("set_panel_regions", { rects });
+
+/**
+ * 动画的每一帧调一次：面板整体下移 `dy`（逻辑像素）时，窗口的原生裁剪区域
+ * 和模糊区域跟着一起走，否则滑动中的面板会被旧的区域切掉一条边。
+ * 基准坐标由 `setPanelRegions` 记在 Rust 侧，这里只发一个数字。
+ */
+export const setPanelOffset = (dy: number) => invoke<void>("set_panel_offset", { dy });
