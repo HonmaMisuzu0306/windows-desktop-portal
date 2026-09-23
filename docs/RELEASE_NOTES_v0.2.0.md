@@ -17,7 +17,7 @@
 
 ## 安装
 
-下载并运行 `Windows Desktop Portal_0.2.0_x64-setup.exe`。安装包面向 Windows x64，并会检测 WebView2 Runtime。已有安装可使用此安装包更新。
+下载并运行 `Windows.Desktop.Portal_0.2.0_x64-setup.exe`。安装包面向 Windows x64，并会检测 WebView2 Runtime。已有安装可使用此安装包更新。
 
 此安装包尚未进行代码签名，Windows 可能显示“未知发布者”提示。请从本仓库的 Release 页面下载并核对发布资产。
 

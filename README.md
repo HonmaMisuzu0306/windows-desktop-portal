@@ -74,7 +74,7 @@
 
 ## 安装
 
-从 [Releases](../../releases) 下载 `Windows Desktop Portal_0.2.0_x64-setup.exe` 安装。
+从 [Releases](../../releases) 下载 `Windows.Desktop.Portal_0.2.0_x64-setup.exe` 安装。
 
 安装包会一并装好 WebView2 依赖检测与开机启动项（可在面板里关掉）。
 
