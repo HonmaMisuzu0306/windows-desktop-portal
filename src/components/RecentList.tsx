@@ -25,6 +25,7 @@ export default function RecentList({ recent, onOpen }: Props) {
   if (recent.length === 0) {
     return (
       <div className="empty">
+        <span className="empty-code">00 / NO ACTIVITY</span>
         <p className="big">还没有打开过东西</p>
         <p className="sub">打开过的会记在这里</p>
       </div>
@@ -33,8 +34,9 @@ export default function RecentList({ recent, onOpen }: Props) {
 
   return (
     <div className="recent">
-      {recent.map((r) => (
+      {recent.map((r, index) => (
         <button key={r.path} className="row" title={r.path} onClick={() => onOpen(r.path)}>
+          <span className="row-index">{String(index + 1).padStart(2, "0")}</span>
           <span className="rn">{r.name}</span>
           <span className="rp">{shortPath(r.path)}</span>
           <span className="rt">{ago(r.at)}</span>

@@ -75,6 +75,7 @@ export default function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [tab, setTab] = useState(DESKTOP_ID);
   const [expanded, setExpanded] = useState(true);
+  const [motionPhase, setMotionPhase] = useState<"idle" | "entering" | "exiting">("idle");
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState("");
   // 同步结果之类的普通提示，短暂显示后自动消失
@@ -285,6 +286,7 @@ export default function App() {
     if (expandedRef.current) return;
     expandedRef.current = true;
     setExpanded(true);
+    setMotionPhase("entering");
 
     // 顺序要紧：先把原生裁剪摆到动画起点，再显示窗口。
     // 反过来窗口会先以"最终位置、接近全亮"的样子露出一帧 —— 那就是闪。
@@ -294,8 +296,11 @@ export default function App() {
     void api
       .setPanelOffset(SLIDE, 0)
       .then(() => api.setDockExpanded(true))
-      .then(() => tween(0, ENTER_MS))
-      .catch(fail);
+      .then(() => tween(0, ENTER_MS, () => setMotionPhase("idle")))
+      .catch((e) => {
+        setMotionPhase("idle");
+        fail(e);
+      });
   }, [fail, tween]);
 
   const collapse = useCallback(() => {
@@ -304,9 +309,15 @@ export default function App() {
     if (!expandedRef.current) return;
     expandedRef.current = false;
     setExpanded(false);
+    setMotionPhase("exiting");
     // 动画跑完才隐藏窗口；收起时窗口不动尺寸、不清区域，
     // 所以下次展开的几何和区域都还是对的
-    tween(SLIDE, EXIT_MS, () => void api.setDockExpanded(false).catch(fail));
+    tween(SLIDE, EXIT_MS, () => {
+      void api.setDockExpanded(false).then(() => setMotionPhase("idle")).catch((e) => {
+        setMotionPhase("idle");
+        fail(e);
+      });
+    });
   }, [fail, tween]);
 
   const toggle = useCallback(() => {
@@ -631,14 +642,21 @@ export default function App() {
         expand();
       }}
     >
+      <span className="nav-code" aria-hidden="true">
+        {c.id === DESKTOP_ID
+          ? "SYS"
+          : BUILTIN.has(c.id)
+            ? String(NAV_ORDER.indexOf(c.id as (typeof NAV_ORDER)[number]) + 1).padStart(2, "0")
+            : "+"}
+      </span>
       <span className="nav-name">{c.name}</span>
-      {c.items.length > 0 && <span className="nav-count">{c.items.length}</span>}
+      <span className="nav-count">{String(c.items.length).padStart(2, "0")}</span>
     </button>
   );
 
   return (
     <div
-      className={`dock${dragging || dragItem ? " is-dragging" : ""}`}
+      className={`dock${dragging || dragItem ? " is-dragging" : ""}${motionPhase === "idle" ? "" : ` is-${motionPhase}`}`}
       ref={dockRef}
       onMouseEnter={expand}
       onMouseLeave={() => {
@@ -648,7 +666,16 @@ export default function App() {
     >
       {/* ── 模块一：分类导航 ───────────────────────────── */}
       <aside className="module module--nav">
-        <div className="brand">桌面收纳</div>
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">▰</span>
+          <span className="brand-copy">
+            <strong>桌面入口</strong>
+            <small>DESKTOP / PORTAL</small>
+          </span>
+          <span className="brand-version">01</span>
+        </div>
+
+        <div className="nav-caption"><span>分类索引</span><span>INDEX / 05</span></div>
 
         <nav className="nav">
           {navCats.map(catButton)}
@@ -657,7 +684,7 @@ export default function App() {
 
           {/* ⭐ 收藏夹：数量不限，新建 / 重命名 / 删除都在这一小块里完成 */}
           <div className="nav-group">
-            <span className="nav-group-title">⭐ 收藏夹</span>
+            <span className="nav-group-title">收藏夹 <em>FAVORITES</em></span>
             <button
               className="nav-add"
               title="新建收藏夹"
@@ -730,6 +757,7 @@ export default function App() {
         </nav>
 
         <div className="side-foot">
+          <div className="side-foot-label"><span>系统控制</span><span>CONTROL</span></div>
           <button
             className="chip"
             data-on={config.settings.autoHide}
@@ -796,8 +824,18 @@ export default function App() {
       {/* ── 模块二：内容区 ─────────────────────────────── */}
       <main className="module module--content">
         <header className="main-head">
-          <h1 className="main-title">{activeCat?.name ?? ""}</h1>
-          {showGrid && <span className="main-sub">{activeCat.items.length} 项</span>}
+          <div className="main-head-top">
+            <span className="eyebrow">PORTAL / DIRECTORY</span>
+            <span className="system-state"><i aria-hidden="true" />本地映射已就绪</span>
+          </div>
+          <div className="main-head-row">
+            <div>
+              <span className="main-kicker">当前分类 / CATEGORY</span>
+              <h1 className="main-title">{activeCat?.name ?? ""}</h1>
+            </div>
+            {showGrid && <div className="main-count"><strong>{String(activeCat.items.length).padStart(2, "0")}</strong><span>ENTRIES / 项目</span></div>}
+          </div>
+          <div className="main-head-bottom"><span>选择项目以打开 · 拖动项目以归类</span><span>原文件保持在原位</span></div>
         </header>
 
         {/* key={tab} 让切换分类时重挂载，从而重放进场动画 */}
@@ -817,7 +855,7 @@ export default function App() {
       {/* ── 模块三：最近访问 ───────────────────────────── */}
       <aside className="module module--recent">
         <div className="recent-head">
-          <span>最近访问</span>
+          <div><span className="eyebrow">ACCESS / LOG</span><strong>最近访问</strong></div>
           {config.recent.length > 0 && (
             <button className="chip" onClick={() => run(api.clearRecent())}>
               清空
@@ -827,6 +865,7 @@ export default function App() {
         <div className="recent-body">
           <RecentList recent={quickRecent} onOpen={openPath} />
         </div>
+        <div className="recent-foot"><span>LOCAL HISTORY</span><span>{String(config.recent.length).padStart(2, "0")} / 20</span></div>
       </aside>
 
       {dragItem && (
@@ -842,7 +881,7 @@ export default function App() {
         </div>
       )}
 
-      {dragging && <div className="drop" />}
+      {dragging && <div className="drop"><span>将文件释放到当前分类</span></div>}
       {error && <div className="toast">{error}</div>}
       {notice && !error && <div className="toast toast--info">{notice}</div>}
     </div>

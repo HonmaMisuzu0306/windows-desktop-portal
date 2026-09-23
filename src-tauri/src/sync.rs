@@ -39,6 +39,7 @@ pub fn sync(cfg: &mut AppConfig, scanned: &[Scanned]) -> SyncReport {
     let mut report = SyncReport::default();
 
     let live: HashSet<String> = scanned.iter().map(|e| norm_path(&e.path)).collect();
+    let ignored: HashSet<String> = cfg.ignored.iter().map(|p| norm_path(p)).collect();
 
     // ── 步骤 1：自动减 ──────────────────────────────────────────
     // 遍历【所有】分类，不只「桌面」。桌面文件没了，无论当初被拖到哪儿都要移除。
@@ -64,7 +65,7 @@ pub fn sync(cfg: &mut AppConfig, scanned: &[Scanned]) -> SyncReport {
     // ── 步骤 3：认领 ────────────────────────────────────────────
     for e in scanned {
         let key = norm_path(&e.path);
-        if claimed.contains(&key) {
+        if claimed.contains(&key) || ignored.contains(&key) {
             continue;
         }
 
@@ -223,6 +224,18 @@ mod tests {
         assert_eq!(d.items.len(), 1);
         assert_eq!(d.items[0].id, desktop_id("C:\\D\\new.txt"), "id 应由路径派生");
         assert_eq!(d.items[0].source, ItemSource::Desktop);
+    }
+
+    /// 从 Portal 移除的桌面条目不应在下次扫描时重新出现。
+    #[test]
+    fn ignored_desktop_item_is_not_reimported() {
+        let mut cfg = AppConfig::default();
+        cfg.ignored.push("c:/d/hidden.txt".into());
+
+        let report = sync(&mut cfg, &[sc("C:\\D\\hidden.txt", "hidden.txt")]);
+
+        assert_eq!(report, SyncReport::default());
+        assert!(cfg.categories[0].items.is_empty());
     }
 
     /// 幂等：同样的扫描结果跑两次，第二次不该有任何变化。

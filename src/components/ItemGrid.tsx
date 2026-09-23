@@ -70,6 +70,7 @@ export default function ItemGrid({
   if (items.length === 0) {
     return (
       <div className="empty">
+        <span className="empty-code">00 / EMPTY DIRECTORY</span>
         <p className="big">把文件夹或程序拖进来</p>
         <p className="sub">松手就添加，一次可以拖多个</p>
       </div>
@@ -83,7 +84,7 @@ export default function ItemGrid({
 
   return (
     <div className="grid">
-      {items.map((item) => {
+      {items.map((item, index) => {
         const icon = icons.get(item.path);
         return (
           <div
@@ -103,6 +104,7 @@ export default function ItemGrid({
               }
             }}
           >
+            <span className="card-meta"><span>{String(index + 1).padStart(2, "0")}</span><span>{item.kind === "folder" ? "DIR" : item.kind === "app" ? "APP" : "FILE"}</span></span>
             <span className="acts">
               <button
                 title="重命名"

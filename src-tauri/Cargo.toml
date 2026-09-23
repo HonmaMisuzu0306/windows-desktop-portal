@@ -1,6 +1,6 @@
 [package]
 name = "windows-desktop-portal"
-version = "0.1.1"
+version = "0.2.0"
 description = "Windows 桌面入口管理器 —— 让桌面保持干净，且不移动任何原始文件"
 edition = "2021"
 rust-version = "1.77"
@@ -47,3 +47,8 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+[profile.dev]
+# 保留行号供调试，同时避免完整调试符号和增量缓存占满磁盘。
+debug = 1
+incremental = false

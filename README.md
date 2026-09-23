@@ -8,8 +8,9 @@
 **它不是文件管理器，也不是桌面美化工具。** 它是一个纯显示层：所有桌面内容通过 Portal 访问，
 但文件的真实位置从未改变。
 
-> 📷 **截图待补** —— 想加截图就放到 `docs/screenshot-main.png`（详见 `docs/README.md`）。
-> 注意：截图会暴露桌面上安装的软件。
+![工业终端界面预览，使用模拟文件名](docs/screenshot-main.png)
+
+> 界面预览使用模拟文件名，不展示用户桌面内容。
 
 ---
 
@@ -60,10 +61,12 @@
 
 ### 界面
 
-Windows 11 Fluent 浅色主题。三个独立悬浮模块：**分类导航 / 内容区 / 最近访问**。
-侧栏底部的 ⭐ 收藏夹可以随时新建分类，数量不限 —— 卡片拖进去即可，原文件不受影响。
+高明度工业终端风格：灰白工作区、深色导航与访问记录、尖角边框、刻度与斜线装饰，黄色标记当前位置。
+三个独立悬浮模块：**分类导航 / 内容区 / 最近访问**。
+侧栏的收藏夹可以随时新建分类，数量不限 —— 卡片拖进去即可，原文件不受影响。
+视觉参考只用于配色、信息层级和构图；项目不包含游戏截图或游戏素材。
 
-唤醒与收起带一段从屏幕底边滑出的动画（约 180–200 ms）：位移走 `transform`，
+唤醒与收起带一段从屏幕底边滑出的动画（约 180–200 ms），面板内有依次显现的内容与扫描光带：位移走 `transform`，
 淡出走**整窗 alpha**（`WS_EX_LAYERED` + `SetLayeredWindowAttributes`），
 全程不触碰 `width` / `height` / `top` / `left`。
 
@@ -71,7 +74,7 @@ Windows 11 Fluent 浅色主题。三个独立悬浮模块：**分类导航 / 内
 
 ## 安装
 
-从 [Releases](../../releases) 下载 `Windows.Desktop.Portal_0.1.1_x64-setup.exe` 安装。
+从 [Releases](../../releases) 下载 `Windows Desktop Portal_0.2.0_x64-setup.exe` 安装。
 
 安装包会一并装好 WebView2 依赖检测与开机启动项（可在面板里关掉）。
 
@@ -111,7 +114,7 @@ npm install
 npm run tauri dev        # 开发
 npm run tauri build      # 打包 → src-tauri/target/release/bundle/nsis/
 
-cd src-tauri && cargo test    # 19 个单测
+cd src-tauri && cargo test    # 25 个单测
 npx tsc --noEmit              # 前端类型检查
 ```
 
@@ -196,7 +199,7 @@ npx tsc --noEmit              # 前端类型检查
 
 ## Roadmap
 
-### v0.1 — 当前版本
+### v0.1 — 基础版本
 
 - [x] 桌面自动扫描与导入
 - [x] 全量同步 + 忽略名单
@@ -214,6 +217,13 @@ npx tsc --noEmit              # 前端类型检查
 - [x] **进出动画** —— 从屏幕底边滑出，配合淡入淡出
 - [x] 修掉收起时的窗口闪现，以及偶发浮现的系统标题栏
 - [x] 修掉收起末尾残留的一片"玻璃"—— 淡出改用整窗 alpha，玻璃跟着内容一起淡
+
+### 0.2.0 — 2026-09-23
+
+- [x] 高明度工业终端界面：尖角、灰白工作区、深色导航和黄色状态标记
+- [x] 分类与文件卡片编号、类型提示和装饰刻度
+- [x] 进出场扫描光带及分区显现
+- [x] 修复忽略名单在桌面同步中未生效的问题
 
 ### 后续
 
@@ -236,7 +246,7 @@ src/                      前端
   components/
     ItemGrid.tsx          卡片网格 + 原生图标
     RecentList.tsx        最近访问
-  styles.css              Fluent 浅色主题
+  industrial.css          工业终端视觉系统
 src-tauri/src/            后端
   main.rs                 命令层 + 数据安全网 + 光标轮询
   config.rs               数据模型 / 迁移 / 归一化
